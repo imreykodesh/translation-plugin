@@ -14,13 +14,19 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 // @ts-ignore
 import icon from '../../resources/icon.png?asset'
-import { exec } from 'child_process'
+import { exec, execFile } from 'child_process'
 import Tesseract from 'tesseract.js'
 import { initUpdater, installUpdate, getUpdateStatus, onUpdateStatus } from './updater'
 
 const APP_NAME = 'FastTranslate AI'
-// עלייה עם Windows מוסיפה את הדגל הזה (ראו setLoginItemSettings): פותחים ישר למגש המערכת
-const startHidden = process.argv.includes('--hidden')
+// עלייה עם Windows מוסיפה את הדגל הזה (ראו registerAutoStart): פותחים ישר למגש המערכת
+const HIDDEN_ARG = '--hidden'
+const startHidden = process.argv.includes(HIDDEN_ARG)
+// שם הרשומה ב-HKCU\...\Run. מפורש, כדי שלא ישתנה יחד עם ה-AppUserModelId
+const LOGIN_ITEM_NAME = 'com.imreykodesh.fasttranslate'
+// השם שבו גרסאות ישנות (לפני התיקון) נרשמו להפעלה, בלי --hidden
+const LEGACY_LOGIN_ITEM_NAME = 'com.electron'
+const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
 
 process.on('uncaughtException', (error) => {
   console.error("שגיאת מערכת נתפסה:", error);
@@ -49,7 +55,49 @@ const showMainWindow = (): void => {
   mainWindow.focus()
 }
 
-app.on('second-instance', showMainWindow)
+// הפעלה נוספת מעליית Windows (עם --hidden) לא מקפיצה את החלון; רק פתיחה יזומה של המשתמש
+app.on('second-instance', (_event, argv) => {
+  if (!argv.includes(HIDDEN_ARG)) showMainWindow()
+})
+
+// גרסאות קודמות נרשמו להפעלה בעליית Windows בשם 'com.electron' ובלי --hidden.
+// התיקון הקודם הוסיף רשומה חדשה עם --hidden אבל לא מחק את הישנה, ולכן Windows הפעיל את התוכנה פעמיים:
+// פעם בלי הדגל (חלון גלוי), ופעם עם הדגל, שהגיעה ל-second-instance והציגה את החלון.
+// כאן מוחקים כל רשומת הפעלה אחרת של התוכנה ומשאירים רשומה אחת עם --hidden.
+function registerAutoStart(): void {
+  const launchItems = process.platform === 'win32' ? app.getLoginItemSettings().launchItems : []
+
+  // launchItems מכיל רק רשומות שמצביעות על קובץ ההפעלה הנוכחי, כך שתוכנות אחרות לא נפגעות
+  for (const item of launchItems) {
+    if (item.scope === 'user' && item.name !== LOGIN_ITEM_NAME) {
+      app.setLoginItemSettings({ openAtLogin: false, name: item.name })
+    }
+  }
+
+  // רשומה ישנה שמצביעה על translation-plugin.exe בנתיב אחר (התקנה ישנה) לא מופיעה ב-launchItems
+  if (process.platform === 'win32') {
+    execFile(
+      'reg',
+      ['query', RUN_KEY, '/v', LEGACY_LOGIN_ITEM_NAME],
+      { windowsHide: true },
+      (err, stdout) => {
+        if (err) return // אין רשומה כזו
+        if (/\\translation-plugin\.exe/i.test(stdout)) {
+          app.setLoginItemSettings({ openAtLogin: false, name: LEGACY_LOGIN_ITEM_NAME })
+        }
+      }
+    )
+  }
+
+  // אם המשתמש כיבה את ההפעלה האוטומטית במנהל המשימות, לא מדליקים אותה מחדש
+  const current = launchItems.find((item) => item.name === LOGIN_ITEM_NAME)
+  app.setLoginItemSettings({
+    openAtLogin: true,
+    name: LOGIN_ITEM_NAME,
+    args: [HIDDEN_ARG],
+    enabled: current?.enabled ?? true
+  })
+}
 
 // התפריט נבנה מחדש כשמצב העדכון משתנה, כדי להציג "התקנת עדכון" כשיש גרסה מוכנה
 const buildTrayMenu = (): void => {
@@ -167,12 +215,7 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
   // הפעלה אוטומטית בעליית המחשב (רק בגרסה המותקנת הסופית, לא בפיתוח)
-  if (!is.dev) {
-    app.setLoginItemSettings({
-      openAtLogin: true,
-      args: ['--hidden'] // עולה בשקט למגש המערכת בלי לפתוח חלון
-    });
-  }
+  if (!is.dev) registerAutoStart()
 
   createWindow()
   createTray()
