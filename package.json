@@ -1,6 +1,6 @@
 {
   "name": "translation-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "FastTranslate AI - Hebrew-English text and screenshot translation for Windows, with OCR",
   "main": "./out/main/index.js",
   "author": "Hodaya Yfrach",
